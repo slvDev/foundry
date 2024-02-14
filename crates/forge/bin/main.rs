@@ -101,5 +101,6 @@ fn main() -> Result<()> {
         Subcommands::Generate(cmd) => match cmd.sub {
             GenerateSubcommands::Test(cmd) => cmd.run(),
         },
+        Subcommands::Lint(cmd) => cmd.run(),
     }
 }

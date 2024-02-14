@@ -18,6 +18,7 @@ use crate::cmd::{
     selectors::SelectorsSubcommands,
     snapshot, test, tree, update,
     verify::{VerifyArgs, VerifyCheckArgs},
+    lint,
 };
 use clap::{Parser, Subcommand, ValueHint};
 use std::path::PathBuf;
@@ -167,4 +168,6 @@ pub enum Subcommands {
 
     /// Generate scaffold files.
     Generate(generate::GenerateArgs),
+    
+    Lint(lint::LintArgs),
 }
