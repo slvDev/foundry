@@ -10,6 +10,7 @@ use foundry_cli::{
 use foundry_common::compile::ProjectCompiler;
 
 mod detectors;
+mod utils;
 
 #[derive(Debug, Parser)]
 pub struct LintArgs{
@@ -48,7 +49,7 @@ impl LintArgs {
             let loc = id.source.to_string_lossy().to_string();
             if !visited_sources.contains(&loc) {
                 // debug
-                println!("File loc: {}", &loc);
+                println!("--> {}", &loc);
                 // read code from file to print the output.
                 // can avoid this read?
                 let mut file = fs::File::open(id.source)?;
