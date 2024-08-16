@@ -1,12 +1,16 @@
 use alloy_json_abi::{Event, Function};
+use alloy_primitives::hex;
 use foundry_common::{
     abi::{get_event, get_func},
     fs,
-    selectors::{SelectorType, SignEthClient},
+    selectors::{OpenChainClient, SelectorType},
 };
-use hashbrown::HashSet;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 use tokio::sync::RwLock;
 
 pub type SingleSignaturesIdentifier = Arc<RwLock<SignaturesIdentifier>>;
@@ -18,74 +22,65 @@ struct CachedSignatures {
 }
 
 /// An identifier that tries to identify functions and events using signatures found at
-/// `https://openchain.xyz`.
+/// `https://openchain.xyz` or a local cache.
 #[derive(Debug)]
 pub struct SignaturesIdentifier {
-    /// Cached selectors for functions and events
+    /// Cached selectors for functions and events.
     cached: CachedSignatures,
-    /// Location where to save `CachedSignatures`
+    /// Location where to save `CachedSignatures`.
     cached_path: Option<PathBuf>,
     /// Selectors that were unavailable during the session.
     unavailable: HashSet<String>,
-    /// The API client to fetch signatures from
-    sign_eth_api: SignEthClient,
-    /// whether traces should be decoded via `sign_eth_api`
-    offline: bool,
+    /// The OpenChain client to fetch signatures from.
+    client: Option<OpenChainClient>,
 }
 
 impl SignaturesIdentifier {
-    #[instrument(target = "forge::signatures")]
+    #[instrument(target = "evm::traces")]
     pub fn new(
         cache_path: Option<PathBuf>,
         offline: bool,
     ) -> eyre::Result<SingleSignaturesIdentifier> {
-        let sign_eth_api = SignEthClient::new()?;
+        let client = if !offline { Some(OpenChainClient::new()?) } else { None };
 
         let identifier = if let Some(cache_path) = cache_path {
             let path = cache_path.join("signatures");
-            trace!(?path, "reading signature cache");
+            trace!(target: "evm::traces", ?path, "reading signature cache");
             let cached = if path.is_file() {
                 fs::read_json_file(&path)
-                    .map_err(|err| warn!(?path, ?err, "failed to read cache file"))
+                    .map_err(|err| warn!(target: "evm::traces", ?path, ?err, "failed to read cache file"))
                     .unwrap_or_default()
             } else {
                 if let Err(err) = std::fs::create_dir_all(cache_path) {
-                    warn!("could not create signatures cache dir: {:?}", err);
+                    warn!(target: "evm::traces", "could not create signatures cache dir: {:?}", err);
                 }
                 CachedSignatures::default()
             };
-            Self {
-                cached,
-                cached_path: Some(path),
-                unavailable: HashSet::new(),
-                sign_eth_api,
-                offline,
-            }
+            Self { cached, cached_path: Some(path), unavailable: HashSet::new(), client }
         } else {
             Self {
                 cached: Default::default(),
                 cached_path: None,
                 unavailable: HashSet::new(),
-                sign_eth_api,
-                offline,
+                client,
             }
         };
 
         Ok(Arc::new(RwLock::new(identifier)))
     }
 
-    #[instrument(target = "forge::signatures", skip(self))]
+    #[instrument(target = "evm::traces", skip(self))]
     pub fn save(&self) {
         if let Some(cached_path) = &self.cached_path {
             if let Some(parent) = cached_path.parent() {
                 if let Err(err) = std::fs::create_dir_all(parent) {
-                    warn!(?parent, ?err, "failed to create cache");
+                    warn!(target: "evm::traces", ?parent, ?err, "failed to create cache");
                 }
             }
             if let Err(err) = fs::write_json_file(cached_path, &self.cached) {
-                warn!(?cached_path, ?err, "failed to flush signature cache");
+                warn!(target: "evm::traces", ?cached_path, ?err, "failed to flush signature cache");
             } else {
-                trace!(?cached_path, "flushed signature cache")
+                trace!(target: "evm::traces", ?cached_path, "flushed signature cache")
             }
         }
     }
@@ -106,15 +101,14 @@ impl SignaturesIdentifier {
         let hex_identifiers: Vec<String> =
             identifiers.into_iter().map(hex::encode_prefixed).collect();
 
-        if !self.offline {
+        if let Some(client) = &self.client {
             let query: Vec<_> = hex_identifiers
                 .iter()
                 .filter(|v| !cache.contains_key(v.as_str()))
                 .filter(|v| !self.unavailable.contains(v.as_str()))
                 .collect();
 
-            if let Ok(res) = self.sign_eth_api.decode_selectors(selector_type, query.clone()).await
-            {
+            if let Ok(res) = client.decode_selectors(selector_type, query.clone()).await {
                 for (hex_id, selector_result) in query.into_iter().zip(res.into_iter()) {
                     let mut found = false;
                     if let Some(decoded_results) = selector_result {
